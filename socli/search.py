@@ -3,9 +3,11 @@ Contains all functions used for searching Stack Overflow and Google
 """
 
 import os
+import pickle
 import random
 import re
 import sys
+import time
 
 from bs4 import BeautifulSoup
 import requests
@@ -35,7 +37,7 @@ def get_questions_for_query(query, count=10):
 
     questions = []
     random_headers()
-
+    print(f"Query is {query}")
     search_res = requests.get(so_qurl + query, headers=header)
     captcha_check(search_res.url)
     soup = BeautifulSoup(search_res.text, 'html.parser')
@@ -70,20 +72,72 @@ def get_questions_for_query_google(query, count=10):
     i = 0
     questions = []
     random_headers()
-    search_results = requests.get(google_search_url + query, headers=header)
-    captcha_check(search_results.url)
-    soup = BeautifulSoup(search_results.text, 'html.parser')
-    try:
-        soup.find_all("div", class_="g")[0]  # For explicitly raising exception
-    except IndexError:
-        socli.printer.print_warning("No results found...")
-        sys.exit(0)
+    # search_results = requests.get(google_search_url + query, headers=header)
+    socli.printer.print_white(f"Google Search URL is {google_search_url + query}")
+    # socli.printer.print_white(f"Status Code: {search_results.status_code}")
+    # captcha_check(search_results.url)
+    # socli.printer.print_white(f"Search Results URL is {search_results.url}")
+    # soup = BeautifulSoup(search_results.text, 'html.parser')
+    div_get_retries_max = 1
+    div_get_retries = 0
+    dump_new_cookies = False
+    while div_get_retries <= (div_get_retries_max-1): # have 5 retries
+        div_get_retries += 1
+        try:
+            with open(os.path.join(os.path.dirname(__file__), 'cookies.txt'), 'rb') as file_obj:
+                cookies_obj = pickle.load(file_obj)
+            socli.printer.print_blue(f"Retry count {div_get_retries}")
+            cookies_obj.clear_expired_cookies()
+            if cookies_obj:
+                search_results = requests.get(google_search_url + query, headers=header, cookies=cookies_obj)
+            else:
+                search_results = requests.get(google_search_url + query, headers=header)
+                dump_new_cookies = True
+                # saving the results in html temporarily to view the html received
+            with open(os.path.join(os.path.dirname(__file__), 'result.html'), 'w+',
+                      encoding='utf-8') as file_obj:
+                file_obj.write(search_results.text)
+            if dump_new_cookies:
+                with open(os.path.join(os.path.dirname(__file__), 'cookies.txt'), 'wb') as cookie_obj:
+                    socli.printer.print_blue(f"cookies values are : {search_results.cookies}")
+                    pickle.dump(search_results.cookies, cookie_obj)
+            captcha_check(search_results.url)
+            with open(os.path.join(os.path.dirname(__file__), 'result.html'), 'w+',
+                      encoding='utf-8') as file_obj:
+                file_obj.write(search_results.text)
+            soup = BeautifulSoup(search_results.text, 'html.parser')
+            count_soup = soup.find_all("div", class_="g")
+            socli.printer.print_white(f"Count of soup find_all for div class=g {len(count_soup)}")
+            soup.find_all("div", class_="g")[0]  # For explicitly raising exception
+            socli.printer.print_white("No exception in soup find_all")
+        except IndexError:
+            socli.printer.print_warning("No results found...")
+            time.sleep(1)   # wait till we can retry HTTP call
+            continue
+        except Exception as ex:
+            print(str(ex))
+        finally:
+            socli.printer.print_white("Within Finally block")
+            if count_soup:
+                # If results are returned, exit loop
+                socli.printer.print_green("Exiting Loop!")
+                break
+            if div_get_retries == div_get_retries_max:
+                # if retries equals to max limit
+                socli.printer.print_fail("Not able to retrieve results.")
+                sys.exit(0)     # Exiting after no results found
+    socli.printer.print_white("Out of try-catch")
     for result in soup.find_all("div", class_="g"):
         if i == count:
             break
         try:
-            question_title = result.find("h3", class_="r").get_text()[:-17]
-            question_desc = result.find("span", class_="st").get_text()
+            # question_title = result.find("h3", class_="r").get_text()[:-17]
+            # question_desc = result.find("span", class_="st").get_text()
+
+            # Above finds towards the questions/desc are not happeninng all the time with the random change in class names
+            # So the below should replace them
+            question_title = result.select('#rso > div > div > div:nth-child(1) > div > div > div.r > a > h3')
+            question_desc = result.select('#rso > div > div > div:nth-child(1) > div > div > div.s > div > span')
             if question_desc == "":  # For avoiding instant answers
                 raise NameError  # Explicit raising
             question_url = result.find("a").get("href")  # Retrieves the Stack Overflow link
@@ -102,8 +156,11 @@ def get_questions_for_query_google(query, count=10):
 
     # Check if there are any valid question posts
     if not questions:
+        socli.printer.print_warning("No questions found")
         socli.printer.print_warning("No results found...")
         sys.exit(0)
+    else:
+        socli.printer.print_blue("Questions are available!")
     return questions
 
 
